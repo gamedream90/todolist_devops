@@ -1,0 +1,12 @@
+# kubernetes/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: todo-flask-service
+spec:
+  type: LoadBalancer # Exposes the service externally via an Azure Load Balancer
+  ports:
+  - port: 80
+    targetPort: 5000 # Map external port 80 to the container's port 5000
+  selector:
+    app: todo-flask # Selects the pods created by todo-flask-deployment
