@@ -2,16 +2,18 @@
 name: Flask App CI/CD to AKS
 
 on:
+  # Trigger the workflow on pushes to the 'main' branch
   push:
     branches: [ "main" ]
+  # Allow manual trigger from the GitHub Actions UI
   workflow_dispatch:
 
+# Define environment variables used throughout the workflow
 env:
   ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }} 
   IMAGE_NAME: todo-flask                          
   IMAGE_TAG: ${{ github.sha }}                    
   K8S_PATH: kubernetes                            
-  FULL_IMAGE_NAME: ${{ secrets.ACR_LOGIN_SERVER }}/todo-flask:${{ github.sha }}
 
 jobs:
   build-and-deploy:
@@ -24,60 +26,56 @@ jobs:
     # 1. CI: Log in to Azure and ACR
     # ----------------------------------------------------
     - name: 🔐 Azure Login
+      # Use stable major version
       uses: azure/login@v1 
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
         
     - name: 🔐 Docker Login to ACR
+      # Use stable major version
       uses: azure/docker-login@v1 
       with:
         login-server: ${{ env.ACR_LOGIN_SERVER }}
+        # Pass SP credentials directly for reliability
         username: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }} 
         password: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }} 
         
     # ----------------------------------------------------
     # 2. CI: Build and Push Docker Image
     # ----------------------------------------------------
-    - name: 🛠️ Build and Tag Docker Image
+    - name: 🛠️ Build and Tag Docker Image (Using specific Dockerfile path)
       run: |
+        # Use -f flag to specify Dockerfile path and ./todolist as build context
         docker build -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f ./todolist/Dockerfile ./todolist 
+
     - name: ⬆️ Push Docker Image to ACR
       run: |
         docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
     # ----------------------------------------------------
-    # 3. CD: Deploy to AKS
+    # 3. CD: Deploy to AKS (Using reliable kubectl commands)
     # ----------------------------------------------------
     
-    # Connects to AKS (essential for running kubectl commands)
+    # Connects to AKS
     - name: 🤝 Get AKS Credentials
       uses: azure/aks-set-context@v3 
       with:
         resource-group: ${{ secrets.RESOURCE_GROUP }}
         cluster-name: ${{ secrets.CLUSTER_NAME }}
 
-    # --- NEW RELIABLE DEPLOYMENT APPROACH ---
+    # Step 3A: Apply all manifests to create/update resources (Service and Deployment)
+    - name: ⚙️ Apply K8s Manifests (Create Service & Deployment)
+      run: |
+        # kubectl apply is idempotent (handles creation and updates)
+        kubectl apply -f ${{ env.K8S_PATH }}/service.yaml
+        kubectl apply -f ${{ env.K8S_PATH }}/deployment.yaml
 
-    # Step 3A: Deploy the Service (This rarely changes)
-    - name: 🚀 Deploy Kubernetes Service
-      uses: azure/k8s-deploy@v4
-      with:
-        manifests: ${{ env.K8S_PATH }}/service.yaml
-        action: deploy
-
-    # Step 3B: Apply the Deployment manifest for the first time
-    # This creates the deployment resource.
-    - name: ⚙️ Create or Update Deployment Resource
-      uses: azure/k8s-deploy@v4
-      with:
-        manifests: ${{ env.K8S_PATH }}/deployment.yaml
-        action: deploy
-
-    # Step 3C: Patch the Deployment with the new image tag (The reliable update method)
+    # Step 3B: Patch the Deployment with the new image tag
+    # This ensures the deployment uses the image we just pushed.
     - name: 📝 Patch Deployment Image
       run: |
-        # Use kubectl to patch the 'todo-flask-deployment' to use the new image hash
-        kubectl set image deployment/todo-flask-deployment todo-flask-app=${{ env.FULL_IMAGE_NAME }}
+        # Uses 'kubectl set image' for robust deployment update
+        kubectl set image deployment/${{ env.IMAGE_NAME }}-deployment ${{ env.IMAGE_NAME }}-app=${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
         
     # ----------------------------------------------------
     # 4. Monitoring and Verification
@@ -85,8 +83,8 @@ jobs:
     - name: 🔎 Verify Deployment and Get Load Balancer IP
       run: |
         echo "Waiting for the new pods to roll out..."
-        kubectl rollout status deployment/todo-flask-deployment --timeout=5m
-        echo "Waiting for LoadBalancer IP (This may take a few minutes for the first run)..."
-        kubectl get service todo-flask-service --watch --timeout=5m
-
-        echo "You can access the Flask app at the LoadBalancer IP once assigned."
+        # Wait for the rollout to complete
+        kubectl rollout status deployment/${{ env.IMAGE_NAME }}-deployment --timeout=5m
+        echo "Waiting for LoadBalancer IP (This may take a few minutes)..."
+        # Watch the service to get the external IP
+        kubectl get service ${{ env.IMAGE_NAME }}-service --watch --timeout=5m
