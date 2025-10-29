@@ -11,6 +11,7 @@ env:
   IMAGE_NAME: todo-flask                          
   IMAGE_TAG: ${{ github.sha }}                    
   K8S_PATH: kubernetes                            
+  FULL_IMAGE_NAME: ${{ secrets.ACR_LOGIN_SERVER }}/todo-flask:${{ github.sha }}
 
 jobs:
   build-and-deploy:
@@ -23,18 +24,14 @@ jobs:
     # 1. CI: Log in to Azure and ACR
     # ----------------------------------------------------
     - name: 🔐 Azure Login
-      # Using the recommended stable major version
       uses: azure/login@v1 
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
         
     - name: 🔐 Docker Login to ACR
-      # Using the recommended stable major version
       uses: azure/docker-login@v1 
       with:
         login-server: ${{ env.ACR_LOGIN_SERVER }}
-        # ACR login can use the client ID and secret from the Service Principal
-        # We use a direct mapping to the credentials for reliability
         username: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }} 
         password: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }} 
         
@@ -50,36 +47,45 @@ jobs:
         docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
     # ----------------------------------------------------
-    # 3. CD: Prepare and Deploy to AKS
+    # 3. CD: Deploy to AKS
     # ----------------------------------------------------
     
-    # NEW STEP: Use the Azure action to connect to AKS
-    - name: 🤝 Get AKS Credentials (Connect to AKS)
-      # Using the recommended stable major version
+    # Connects to AKS (essential for running kubectl commands)
+    - name: 🤝 Get AKS Credentials
       uses: azure/aks-set-context@v3 
       with:
         resource-group: ${{ secrets.RESOURCE_GROUP }}
         cluster-name: ${{ secrets.CLUSTER_NAME }}
-        
-    # NEW STEP: Update the image tag in the K8s deployment file (Using a different approach for reliability)
-    - name: 📝 Update K8s Deployment Image Tag
-      # We are using k8s-set-service-acr-image, which is deprecated, but sometimes works. 
-      # Let's try the latest recommended approach for updating deployment images.
-      uses: azure/k8s-set-service-acr-image@v1 
-      with:
-        manifests: ${{ env.K8S_PATH }}/deployment.yaml 
-        image-names: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-        container-name: todo-flask-app 
 
-    - name: 🚀 Deploy to AKS
+    # --- NEW RELIABLE DEPLOYMENT APPROACH ---
+
+    # Step 3A: Deploy the Service (This rarely changes)
+    - name: 🚀 Deploy Kubernetes Service
       uses: azure/k8s-deploy@v4
       with:
-        manifests: |
-          ${{ env.K8S_PATH }}/deployment.yaml
-          ${{ env.K8S_PATH }}/service.yaml
+        manifests: ${{ env.K8S_PATH }}/service.yaml
         action: deploy
 
+    # Step 3B: Apply the Deployment manifest for the first time
+    # This creates the deployment resource.
+    - name: ⚙️ Create or Update Deployment Resource
+      uses: azure/k8s-deploy@v4
+      with:
+        manifests: ${{ env.K8S_PATH }}/deployment.yaml
+        action: deploy
+
+    # Step 3C: Patch the Deployment with the new image tag (The reliable update method)
+    - name: 📝 Patch Deployment Image
+      run: |
+        # Use kubectl to patch the 'todo-flask-deployment' to use the new image hash
+        kubectl set image deployment/todo-flask-deployment todo-flask-app=${{ env.FULL_IMAGE_NAME }}
+        
+    # ----------------------------------------------------
+    # 4. Monitoring and Verification
+    # ----------------------------------------------------
     - name: 🔎 Verify Deployment and Get Load Balancer IP
       run: |
-        echo "Waiting for LoadBalancer IP..."
+        echo "Waiting for the new pods to roll out..."
+        kubectl rollout status deployment/todo-flask-deployment --timeout=5m
+        echo "Waiting for LoadBalancer IP (This may take a few minutes for the first run)..."
         kubectl get service todo-flask-service --watch --timeout=5m
