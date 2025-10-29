@@ -89,3 +89,5 @@ jobs:
         kubectl rollout status deployment/todo-flask-deployment --timeout=5m
         echo "Waiting for LoadBalancer IP (This may take a few minutes for the first run)..."
         kubectl get service todo-flask-service --watch --timeout=5m
+
+        echo "You can access the Flask app at the LoadBalancer IP once assigned."
