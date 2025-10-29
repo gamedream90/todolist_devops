@@ -2,13 +2,10 @@
 name: Flask App CI/CD to AKS
 
 on:
-  # Trigger the workflow on pushes to the 'main' branch
   push:
     branches: [ "main" ]
-  # Allow manual trigger from the GitHub Actions UI
   workflow_dispatch:
 
-# Define environment variables used throughout the workflow
 env:
   ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }} 
   IMAGE_NAME: todo-flask                          
@@ -34,7 +31,6 @@ jobs:
       uses: azure/docker-login@v1 
       with:
         login-server: ${{ env.ACR_LOGIN_SERVER }}
-        # --- THIS IS THE FIX ---
         username: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }} 
         password: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }} 
         
@@ -62,7 +58,8 @@ jobs:
     - name: ⚙️ Apply K8s Manifests (Create Service & Deployment)
       run: |
         kubectl apply -f ${{ env.K8S_PATH }}/service.yaml
-        kubectl apply -f ${{ env.KFS_PATH }}/deployment.yaml
+        # --- THIS IS THE FIX ---
+        kubectl apply -f ${{ env.K8S_PATH }}/deployment.yaml 
 
     - name: 📝 Patch Deployment Image
       run: |
@@ -74,10 +71,7 @@ jobs:
     - name: 🔎 Verify Deployment Health and Get Logs
       run: |
         echo "Waiting for the new pods to roll out (5m timeout)..."
-        # We run 'rollout status' but use '||' to continue if it fails
         kubectl rollout status deployment/${{ env.IMAGE_NAME }}-deployment --timeout=5m || echo "Rollout timed out. Collecting diagnostics..."
-        
-        # --- DIAGNOSTICS ---
         
         echo "--- Pod Status after Rollout ---"
         kubectl get pods -l app=${{ env.IMAGE_NAME }} --show-labels
@@ -106,5 +100,4 @@ jobs:
         kubectl get service ${{ env.IMAGE_NAME }}-service
         
         echo "--- Final Rollout Check ---"
-        # This command will fail the job if the rollout didn't succeed
         kubectl rollout status deployment/${{ env.IMAGE_NAME }}-deployment --timeout=10s
