@@ -18,6 +18,6 @@ spec:
       containers:
       - name: todo-flask-app
         # IMPORTANT: Replace the image name with your ACR Login Server + image name
-        image: flasktodocrgamedream90.azurecr.io/todo-flask:latest 
+        image: todo-flask 
         ports:
         - containerPort: 5000 # Flask runs on port 5000

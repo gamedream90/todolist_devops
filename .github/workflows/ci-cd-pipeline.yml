@@ -5,13 +5,15 @@ on:
   # Trigger the workflow on pushes to the 'main' branch
   push:
     branches: [ "main" ]
+  # Allow manual trigger from the GitHub Actions UI (optional, but useful)
+  workflow_dispatch:
 
 # Define environment variables used throughout the workflow
 env:
-  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
-  IMAGE_NAME: todo-flask
-  IMAGE_TAG: ${{ github.sha }}
-  K8S_PATH: kubernetes
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }} # e.g., flasktodocrgamedream90.azurecr.io
+  IMAGE_NAME: todo-flask                          # Must match the image name in deployment.yaml
+  IMAGE_TAG: ${{ github.sha }}                    # Use the unique commit hash as the image tag
+  K8S_PATH: kubernetes                            # Directory containing Kubernetes manifests
 
 jobs:
   build-and-deploy:
@@ -24,23 +26,25 @@ jobs:
     # 1. CI: Log in to Azure and ACR
     # ----------------------------------------------------
     - name: 🔐 Azure Login
-      uses: azure/login@v1
+      uses: azure/login@v1.4.6
       with:
+        # Uses the JSON Service Principal credentials secret
         creds: ${{ secrets.AZURE_CREDENTIALS }}
         
     - name: 🔐 Docker Login to ACR
-      uses: azure/docker-login@v1
+      uses: azure/docker-login@v1.5.1
       with:
         login-server: ${{ env.ACR_LOGIN_SERVER }}
-        username: ${{ secrets.CLIENT_ID }} # Uses the clientId from AZURE_CREDENTIALS
-        password: ${{ secrets.CLIENT_SECRET }} # Uses the clientSecret from AZURE_CREDENTIALS
+        # ACR login uses the client ID and secret from the Service Principal
+        username: ${{ secrets.CLIENT_ID }} 
+        password: ${{ secrets.CLIENT_SECRET }} 
         
     # ----------------------------------------------------
     # 2. CI: Build and Push Docker Image
     # ----------------------------------------------------
     - name: 🛠️ Build and Tag Docker Image
       run: |
-        # Full image name: flasktodocrgamedream90.azurecr.io/todo-flask:gihub_sha
+        # Build the image using the full path: ACR_LOGIN_SERVER/IMAGE_NAME:IMAGE_TAG
         docker build -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} ./todolist 
 
     - name: ⬆️ Push Docker Image to ACR
@@ -50,31 +54,36 @@ jobs:
     # ----------------------------------------------------
     # 3. CD: Prepare and Deploy to AKS
     # ----------------------------------------------------
-    - name: 📝 Update K8s Deployment YAML (Set new image tag)
-      uses: sergeysova/replace-text-in-file@v1.2
-      with:
-        file: ${{ env.K8S_PATH }}/deployment.yaml
-        # Replace the 'latest' tag with the unique image tag (github.sha)
-        # Note: We use the full image name in deployment.yaml to ensure we only update the tag
-        original: 'image: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest'
-        replacement: 'image: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
-
+    
+    # NEW STEP: Use the Azure action to connect to AKS
     - name: 🤝 Get AKS Credentials (Connect to AKS)
       uses: azure/aks-set-context@v3
       with:
         resource-group: ${{ secrets.RESOURCE_GROUP }}
         cluster-name: ${{ secrets.CLUSTER_NAME }}
         
+    # NEW STEP: Update the image tag in the K8s deployment file (Recommended fix)
+    - name: 📝 Update K8s Deployment Image Tag
+      uses: azure/k8s-set-service-acr-image@v1 
+      with:
+        # Path to the Kubernetes Deployment manifest
+        manifests: ${{ env.K8S_PATH }}/deployment.yaml 
+        # The full image name to be injected into the deployment file
+        image-names: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        # The specific container name within the deployment to update
+        container-name: todo-flask-app 
+
     - name: 🚀 Deploy to AKS
       uses: azure/k8s-deploy@v4
       with:
+        # Apply both the updated deployment and service manifests
         manifests: |
           ${{ env.K8S_PATH }}/deployment.yaml
           ${{ env.K8S_PATH }}/service.yaml
-        action: deploy
+        action: deploy # Action to apply the manifests
 
     - name: 🔎 Verify Deployment and Get Load Balancer IP
       run: |
         echo "Waiting for LoadBalancer IP..."
-        # Wait up to 10 minutes for the Load Balancer IP to be provisioned
-        kubectl get service todo-flask-service --watch --timeout=10m
+        # Wait for the LoadBalancer to get an external IP address
+        kubectl get service todo-flask-service --watch --timeout=5m
