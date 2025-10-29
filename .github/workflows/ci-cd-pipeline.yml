@@ -1,0 +1,80 @@
+# .github/workflows/ci-cd-pipeline.yml
+name: Flask App CI/CD to AKS
+
+on:
+  # Trigger the workflow on pushes to the 'main' branch
+  push:
+    branches: [ "main" ]
+
+# Define environment variables used throughout the workflow
+env:
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+  IMAGE_NAME: todo-flask
+  IMAGE_TAG: ${{ github.sha }}
+  K8S_PATH: kubernetes
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: ⬇️ Checkout Repository
+      uses: actions/checkout@v4
+
+    # ----------------------------------------------------
+    # 1. CI: Log in to Azure and ACR
+    # ----------------------------------------------------
+    - name: 🔐 Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+        
+    - name: 🔐 Docker Login to ACR
+      uses: azure/docker-login@v1
+      with:
+        login-server: ${{ env.ACR_LOGIN_SERVER }}
+        username: ${{ secrets.CLIENT_ID }} # Uses the clientId from AZURE_CREDENTIALS
+        password: ${{ secrets.CLIENT_SECRET }} # Uses the clientSecret from AZURE_CREDENTIALS
+        
+    # ----------------------------------------------------
+    # 2. CI: Build and Push Docker Image
+    # ----------------------------------------------------
+    - name: 🛠️ Build and Tag Docker Image
+      run: |
+        # Full image name: flasktodocrgamedream90.azurecr.io/todo-flask:gihub_sha
+        docker build -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} ./todolist 
+
+    - name: ⬆️ Push Docker Image to ACR
+      run: |
+        docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
+    # ----------------------------------------------------
+    # 3. CD: Prepare and Deploy to AKS
+    # ----------------------------------------------------
+    - name: 📝 Update K8s Deployment YAML (Set new image tag)
+      uses: sergeysova/replace-text-in-file@v1.2
+      with:
+        file: ${{ env.K8S_PATH }}/deployment.yaml
+        # Replace the 'latest' tag with the unique image tag (github.sha)
+        # Note: We use the full image name in deployment.yaml to ensure we only update the tag
+        original: 'image: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest'
+        replacement: 'image: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
+
+    - name: 🤝 Get AKS Credentials (Connect to AKS)
+      uses: azure/aks-set-context@v3
+      with:
+        resource-group: ${{ secrets.RESOURCE_GROUP }}
+        cluster-name: ${{ secrets.CLUSTER_NAME }}
+        
+    - name: 🚀 Deploy to AKS
+      uses: azure/k8s-deploy@v4
+      with:
+        manifests: |
+          ${{ env.K8S_PATH }}/deployment.yaml
+          ${{ env.K8S_PATH }}/service.yaml
+        action: deploy
+
+    - name: 🔎 Verify Deployment and Get Load Balancer IP
+      run: |
+        echo "Waiting for LoadBalancer IP..."
+        # Wait up to 10 minutes for the Load Balancer IP to be provisioned
+        kubectl get service todo-flask-service --watch --timeout=10m
