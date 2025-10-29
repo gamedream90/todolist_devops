@@ -65,39 +65,54 @@ jobs:
       run: |
         kubectl set image deployment/${{ env.IMAGE_NAME }}-deployment ${{ env.IMAGE_NAME }}-app=${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
         
+    # # ----------------------------------------------------
+    # # 4. Monitoring and Verification (with Diagnostics)
+    # # ----------------------------------------------------
+    # - name: 🔎 Verify Deployment Health and Get Logs
+    #   run: |
+    #     echo "Waiting for the new pods to roll out (5m timeout)..."
+    #     kubectl rollout status deployment/${{ env.IMAGE_NAME }}-deployment --timeout=5m || echo "Rollout timed out. Collecting diagnostics..."
+        
+    #     echo "--- Pod Status after Rollout ---"
+    #     kubectl get pods -l app=${{ env.IMAGE_NAME }} --show-labels
+        
+    #     echo "--- Kubernetes Events for Deployment ---"
+    #     NEW_REPLICASET_NAME=$(kubectl describe deployment ${{ env.IMAGE_NAME }}-deployment | grep "NewReplicaSet" | awk '{print $2}')
+    #     if [ ! -z "$NEW_REPLICASET_NAME" ]; then
+    #       echo "--- Events for new ReplicaSet ($NEW_REPLICASET_NAME) ---"
+    #       kubectl describe replicaset $NEW_REPLICASET_NAME
+    #     else
+    #       echo "Could not find new ReplicaSet to describe events."
+    #     fi
+        
+    #     echo "--- Logs from a Failing Pod ---"
+    #     POD_NAME=$(kubectl get pods -l app=${{ env.IMAGE_NAME }} -o jsonpath='{.items[0].metadata.name}')
+    #     if [ ! -z "$POD_NAME" ]; then
+    #       echo "--- Logs from *previous* container (if it crashed) ---"
+    #       kubectl logs --previous $POD_NAME || echo "No previous container logs found."
+    #       echo "--- Logs from *current* container ---"
+    #       kubectl logs $POD_NAME
+    #     else
+    #       echo "Could not find a pod name to fetch logs."
+    #     fi
+        
+    #     echo "--- Final LoadBalancer IP Check ---"
+    #     kubectl get service ${{ env.IMAGE_NAME }}-service
+        
+    #     echo "--- Final Rollout Check ---"
+    #     kubectl rollout status deployment/${{ env.IMAGE_NAME }}-deployment --timeout=10s
+
     # ----------------------------------------------------
-    # 4. Monitoring and Verification (with Diagnostics)
-    # ----------------------------------------------------
-    - name: 🔎 Verify Deployment Health and Get Logs
+# 4. Monitoring and Verification (Final Clean Version)
+# ----------------------------------------------------
+    - name: 🔎 Verify Deployment and Get IP
       run: |
-        echo "Waiting for the new pods to roll out (5m timeout)..."
-        kubectl rollout status deployment/${{ env.IMAGE_NAME }}-deployment --timeout=5m || echo "Rollout timed out. Collecting diagnostics..."
-        
-        echo "--- Pod Status after Rollout ---"
-        kubectl get pods -l app=${{ env.IMAGE_NAME }} --show-labels
-        
-        echo "--- Kubernetes Events for Deployment ---"
-        NEW_REPLICASET_NAME=$(kubectl describe deployment ${{ env.IMAGE_NAME }}-deployment | grep "NewReplicaSet" | awk '{print $2}')
-        if [ ! -z "$NEW_REPLICASET_NAME" ]; then
-          echo "--- Events for new ReplicaSet ($NEW_REPLICASET_NAME) ---"
-          kubectl describe replicaset $NEW_REPLICASET_NAME
-        else
-          echo "Could not find new ReplicaSet to describe events."
-        fi
-        
-        echo "--- Logs from a Failing Pod ---"
-        POD_NAME=$(kubectl get pods -l app=${{ env.IMAGE_NAME }} -o jsonpath='{.items[0].metadata.name}')
-        if [ ! -z "$POD_NAME" ]; then
-          echo "--- Logs from *previous* container (if it crashed) ---"
-          kubectl logs --previous $POD_NAME || echo "No previous container logs found."
-          echo "--- Logs from *current* container ---"
-          kubectl logs $POD_NAME
-        else
-          echo "Could not find a pod name to fetch logs."
-        fi
-        
-        echo "--- Final LoadBalancer IP Check ---"
+        echo "Waiting for deployment rollout to complete..."
+        kubectl rollout status deployment/${{ env.IMAGE_NAME }}-deployment --timeout=2m
+
+        echo "Fetching LoadBalancer IP (can take 1-2 mins)..."
+        # Wait for the external IP to be assigned
+        kubectl wait --for=condition=LoadBalancerInboundIPsExist service/${{ env.IMAGE_NAME }}-service --timeout=3m
+
+        echo "Deployment successful! Access your app at the EXTERNAL-IP:"
         kubectl get service ${{ env.IMAGE_NAME }}-service
-        
-        echo "--- Final Rollout Check ---"
-        kubectl rollout status deployment/${{ env.IMAGE_NAME }}-deployment --timeout=10s
