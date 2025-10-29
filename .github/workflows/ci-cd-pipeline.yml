@@ -26,24 +26,21 @@ jobs:
     # 1. CI: Log in to Azure and ACR
     # ----------------------------------------------------
     - name: 🔐 Azure Login
-      # Use stable major version
       uses: azure/login@v1 
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
         
     - name: 🔐 Docker Login to ACR
-      # Use stable major version
       uses: azure/docker-login@v1 
       with:
         login-server: ${{ env.ACR_LOGIN_SERVER }}
-        # Pass SP credentials directly for reliability
-        username: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }} 
+        username: ${{ fromJson(secrets.AZURE_E_CREDENTIALS).clientId }} 
         password: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }} 
         
     # ----------------------------------------------------
     # 2. CI: Build and Push Docker Image
     # ----------------------------------------------------
-    - name: 🛠️ Build and Tag Docker Image (Using specific Dockerfile path)
+    - name: 🛠️ Build and Tag Docker Image
       run: |
         # Use -f flag to specify Dockerfile path and ./todolist as build context
         docker build -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f ./todolist/Dockerfile ./todolist 
@@ -53,38 +50,71 @@ jobs:
         docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
     # ----------------------------------------------------
-    # 3. CD: Deploy to AKS (Using reliable kubectl commands)
+    # 3. CD: Deploy to AKS
     # ----------------------------------------------------
     
-    # Connects to AKS
     - name: 🤝 Get AKS Credentials
       uses: azure/aks-set-context@v3 
       with:
         resource-group: ${{ secrets.RESOURCE_GROUP }}
         cluster-name: ${{ secrets.CLUSTER_NAME }}
 
-    # Step 3A: Apply all manifests to create/update resources (Service and Deployment)
     - name: ⚙️ Apply K8s Manifests (Create Service & Deployment)
       run: |
-        # kubectl apply is idempotent (handles creation and updates)
         kubectl apply -f ${{ env.K8S_PATH }}/service.yaml
         kubectl apply -f ${{ env.K8S_PATH }}/deployment.yaml
 
-    # Step 3B: Patch the Deployment with the new image tag
-    # This ensures the deployment uses the image we just pushed.
     - name: 📝 Patch Deployment Image
       run: |
-        # Uses 'kubectl set image' for robust deployment update
         kubectl set image deployment/${{ env.IMAGE_NAME }}-deployment ${{ env.IMAGE_NAME }}-app=${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
         
     # ----------------------------------------------------
-    # 4. Monitoring and Verification
+    # 4. Monitoring and Verification (NEW DIAGNOSTIC STEP)
     # ----------------------------------------------------
-    - name: 🔎 Verify Deployment and Get Load Balancer IP
+    - name: 🔎 Verify Deployment Health and Get Logs
       run: |
-        echo "Waiting for the new pods to roll out..."
-        # Wait for the rollout to complete
-        kubectl rollout status deployment/${{ env.IMAGE_NAME }}-deployment --timeout=5m
-        echo "Waiting for LoadBalancer IP (This may take a few minutes)..."
-        # Watch the service to get the external IP
-        kubectl get service ${{ env.IMAGE_NAME }}-service --watch --timeout=5m
+        echo "Waiting for the new pods to roll out (5m timeout)..."
+        # We run 'rollout status' but use '||' to continue if it fails.
+        # This allows us to run diagnostics.
+        kubectl rollout status deployment/${{ env.IMAGE_NAME }}-deployment --timeout=5m || echo "Rollout timed out. Collecting diagnostics..."
+        
+        # --- DIAGNOSTICS ---
+        
+        # 1. Get detailed pod status (shows CrashLoopBackOff or ImagePullBackOff)
+        echo "--- Pod Status after Rollout ---"
+        kubectl get pods -l app=${{ env.IMAGE_NAME }} --show-labels
+        
+        # 2. Get events from the ReplicaSet to find the root cause
+        echo "--- Kubernetes Events for Deployment ---"
+        # Get the ReplicaSet associated with the deployment
+        NEW_REPLICASET_NAME=$(kubectl describe deployment ${{ env.IMAGE_NAME }}-deployment | grep "NewReplicaSet" | awk '{print $2}')
+        if [ ! -z "$NEW_REPLICASET_NAME" ]; then
+          echo "--- Events for new ReplicaSet ($NEW_REPLICASET_NAME) ---"
+          kubectl describe replicaset $NEW_REPLICASET_NAME
+        else
+          echo "Could not find new ReplicaSet to describe events."
+        fi
+        
+        # 3. Get container logs (This is the most critical info)
+        echo "--- Logs from a Failing Pod ---"
+        # Find the name of one of the newly created pods
+        POD_NAME=$(kubectl get pods -l app=${{ env.IMAGE_NAME }} -o jsonpath='{.items[0].metadata.name}')
+        if [ ! -z "$POD_NAME" ]; then
+          # Get logs from the *previous* container instance if it crashed
+          echo "--- Logs from *previous* container (if it crashed) ---"
+          kubectl logs --previous $POD_NAME || echo "No previous container logs found."
+          echo "--- Logs from *current* container ---"
+          kubectl logs $POD_NAME
+        else
+          echo "Could not find a pod name to fetch logs."
+        fi
+        
+        # --- Final Check for IP ---
+        echo "--- Final LoadBalancer IP Check ---"
+        kubectl get service ${{ env.IMAGE_NAME }}-service
+        
+        # --- Final Step: Re-check rollout to fail the job if it truly failed ---
+        echo "--- Final Rollout Check ---"
+        # This command will fail the job if the rollout didn't succeed
+        # after all diagnostics are printed.
+        kubectl rollout status deployment/${{ env.IMAGE_NAME }}-deployment --timeout=10s
