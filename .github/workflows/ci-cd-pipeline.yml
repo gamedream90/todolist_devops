@@ -40,8 +40,7 @@ jobs:
     # ----------------------------------------------------
     - name: 🛠️ Build and Tag Docker Image
       run: |
-        docker build -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} ./todolist 
-
+        docker build -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f ./todolist/Dockerfile ./todolist 
     - name: ⬆️ Push Docker Image to ACR
       run: |
         docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
