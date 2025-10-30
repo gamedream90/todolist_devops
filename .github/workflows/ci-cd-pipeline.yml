@@ -18,6 +18,23 @@ jobs:
     steps:
     - name: ⬇️ Checkout Repository
       uses: actions/checkout@v4
+    # .github/workflows/ci-cd-pipeline.yml
+
+# ... (Previous step: Checkout Repository) ...
+
+    - name: 🔬 Run Unit Tests (Pytest)
+      # Uses Python and installs dependencies to run tests locally
+      run: |
+        echo "Setting up Python environment and installing dependencies..."
+        python -m pip install --upgrade pip
+        # Install dependencies from the application's requirements file
+        pip install -r todolist/requirements.txt 
+        
+        echo "Executing Pytest from the todolist directory..."
+        # Run tests against the application code
+        pytest todolist/test_app.py
+        
+# ... (Next step: Azure Login) ...
 
     # ----------------------------------------------------
     # 1. CI: Log in to Azure and ACR
