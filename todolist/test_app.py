@@ -20,4 +20,4 @@ def test_homepage_status(client):
 def test_homepage_content(client):
     rv = client.get('/')
     # Assert that the expected header text is found
-    assert b"To-Do List" in rv.data
+    assert b"Todo List" in rv.data
